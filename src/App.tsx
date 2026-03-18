@@ -150,8 +150,9 @@ export default function App() {
   const handleLogin = async () => {
     try {
       await signInWithPopup(auth, googleProvider);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Login failed:', error);
+      throw error; // Re-throw to be caught by AuthScreen
     }
   };
 
@@ -315,7 +316,34 @@ export default function App() {
 
 // --- Sub-screens ---
 
-const AuthScreen: React.FC<{ onGoogleLogin: () => void }> = ({ onGoogleLogin }) => {
+const getAuthErrorMessage = (code: string) => {
+  switch (code) {
+    case 'auth/invalid-email':
+      return 'The email address is badly formatted.';
+    case 'auth/user-disabled':
+      return 'This user account has been disabled.';
+    case 'auth/user-not-found':
+      return 'There is no user record corresponding to this identifier.';
+    case 'auth/wrong-password':
+      return 'Incorrect password. Please try again.';
+    case 'auth/email-already-in-use':
+      return 'The email address is already in use by another account.';
+    case 'auth/operation-not-allowed':
+      return 'This authentication method is not enabled in Firebase.';
+    case 'auth/weak-password':
+      return 'The password is too weak. Please use at least 6 characters.';
+    case 'auth/popup-closed-by-user':
+      return 'The login popup was closed before completion.';
+    case 'auth/cancelled-by-user':
+      return 'The operation was cancelled.';
+    case 'auth/network-request-failed':
+      return 'Network error. Please check your connection.';
+    default:
+      return 'An unexpected error occurred. Please try again.';
+  }
+};
+
+const AuthScreen: React.FC<{ onGoogleLogin: () => Promise<void> }> = ({ onGoogleLogin }) => {
   const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -325,6 +353,15 @@ const AuthScreen: React.FC<{ onGoogleLogin: () => void }> = ({ onGoogleLogin }) 
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSignUp && name.trim().length < 2) {
+      setError('Please enter your full name.');
+      return;
+    }
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters.');
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
@@ -335,7 +372,19 @@ const AuthScreen: React.FC<{ onGoogleLogin: () => void }> = ({ onGoogleLogin }) 
         await signInWithEmailAndPassword(auth, email, password);
       }
     } catch (err: any) {
-      setError(err.message || 'Authentication failed');
+      setError(getAuthErrorMessage(err.code));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGoogleClick = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      await onGoogleLogin();
+    } catch (err: any) {
+      setError(getAuthErrorMessage(err.code));
     } finally {
       setLoading(false);
     }
@@ -355,6 +404,17 @@ const AuthScreen: React.FC<{ onGoogleLogin: () => void }> = ({ onGoogleLogin }) 
         <p className="text-stone-500 mb-8 font-medium text-center">
           {isSignUp ? 'Create your account' : 'Sign in to your account'}
         </p>
+
+        {error && (
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="mb-6 p-4 bg-red-50 border border-red-100 rounded-2xl flex items-start gap-3"
+          >
+            <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+            <p className="text-sm font-bold text-red-600 leading-tight">{error}</p>
+          </motion.div>
+        )}
 
         <form onSubmit={handleSubmit} className="space-y-4 mb-6">
           {isSignUp && (
@@ -393,14 +453,17 @@ const AuthScreen: React.FC<{ onGoogleLogin: () => void }> = ({ onGoogleLogin }) 
             />
           </div>
 
-          {error && <p className="text-red-500 text-xs font-bold text-center">{error}</p>}
-
           <button 
             type="submit"
             disabled={loading}
             className="w-full py-4 bg-stone-900 text-white rounded-2xl font-bold hover:bg-stone-800 transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-xl disabled:opacity-50"
           >
-            {loading ? 'Processing...' : (isSignUp ? 'Sign Up' : 'Sign In')}
+            {loading ? (
+              <div className="flex items-center justify-center gap-2">
+                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                <span>Processing...</span>
+              </div>
+            ) : (isSignUp ? 'Sign Up' : 'Sign In')}
           </button>
         </form>
 
@@ -414,8 +477,9 @@ const AuthScreen: React.FC<{ onGoogleLogin: () => void }> = ({ onGoogleLogin }) 
         </div>
         
         <button 
-          onClick={onGoogleLogin}
-          className="w-full flex items-center justify-center gap-3 py-4 bg-white text-stone-900 border border-stone-200 rounded-2xl font-bold hover:bg-stone-50 transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-sm mb-6"
+          onClick={handleGoogleClick}
+          disabled={loading}
+          className="w-full flex items-center justify-center gap-3 py-4 bg-white text-stone-900 border border-stone-200 rounded-2xl font-bold hover:bg-stone-50 transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-sm mb-6 disabled:opacity-50"
         >
           <img src="https://www.google.com/favicon.ico" className="w-5 h-5" alt="Google" />
           Google Account
@@ -423,7 +487,10 @@ const AuthScreen: React.FC<{ onGoogleLogin: () => void }> = ({ onGoogleLogin }) 
 
         <div className="text-center">
           <button 
-            onClick={() => setIsSignUp(!isSignUp)}
+            onClick={() => {
+              setIsSignUp(!isSignUp);
+              setError(null);
+            }}
             className="text-sm font-bold text-stone-600 hover:text-stone-900 transition-colors"
           >
             {isSignUp ? 'Already have an account? Sign In' : "Don't have an account? Sign Up"}
