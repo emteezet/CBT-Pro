@@ -85,7 +85,7 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<'dashboard' | 'exam' | 'results' | 'create-exam' | 'edit-questions' | 'student-results' | 'submission-detail'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'exam' | 'results' | 'create-exam' | 'edit-questions' | 'student-results' | 'submission-detail' | 'teacher-exam-summary'>('dashboard');
   const [pendingView, setPendingView] = useState<any>(null);
   const [showExitConfirm, setShowExitConfirm] = useState(false);
   const [selectedExam, setSelectedExam] = useState<Exam | null>(null);
@@ -260,6 +260,15 @@ export default function App() {
                   safeSetView('student-results');
                   setSelectedSubmission(null);
                 }}
+              />
+            )}
+            {view === 'teacher-exam-summary' && selectedExam && (
+              <TeacherExamSummary 
+                exam={selectedExam} 
+                onClose={() => {
+                  safeSetView('dashboard');
+                  setSelectedExam(null);
+                }} 
               />
             )}
           </AnimatePresence>
@@ -578,6 +587,7 @@ const Dashboard: React.FC<{ profile: UserProfile, setView: (v: any) => void, set
               profile={profile} 
               onEdit={() => { setSelectedExam(exam); setView('edit-questions'); }}
               onTake={() => { setSelectedExam(exam); setView('exam'); }}
+              onSummary={() => { setSelectedExam(exam); setView('teacher-exam-summary'); }}
             />
           ))}
         </div>
@@ -586,38 +596,34 @@ const Dashboard: React.FC<{ profile: UserProfile, setView: (v: any) => void, set
   );
 };
 
-const ExamCard: React.FC<{ exam: Exam, profile: UserProfile, onEdit: () => void, onTake: () => void }> = ({ exam, profile, onEdit, onTake }) => {
+const ExamCard: React.FC<{ exam: Exam, profile: UserProfile, onEdit: () => void, onTake: () => void, onSummary: () => void }> = ({ exam, profile, onEdit, onTake, onSummary }) => {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [stats, setStats] = useState<{ avg: number, max: number, count: number } | null>(null);
   const [loadingStats, setLoadingStats] = useState(false);
   
   useEffect(() => {
     if (profile.role === 'teacher') {
-      const fetchStats = async () => {
-        setLoadingStats(true);
-        try {
-          const q = query(collection(db, 'submissions'), where('examId', '==', exam.id));
-          const snapshot = await getDocs(q);
-          const submissions = snapshot.docs.map(doc => doc.data() as Submission);
-          
-          if (submissions.length > 0) {
-            const totalScore = submissions.reduce((acc, curr) => acc + curr.score, 0);
-            const maxScore = Math.max(...submissions.map(s => s.score));
-            setStats({
-              avg: Math.round((totalScore / submissions.length) * 10) / 10,
-              max: maxScore,
-              count: submissions.length
-            });
-          } else {
-            setStats({ avg: 0, max: 0, count: 0 });
-          }
-        } catch (error) {
-          console.error("Error fetching stats:", error);
-        } finally {
-          setLoadingStats(false);
+      const q = query(collection(db, 'submissions'), where('examId', '==', exam.id));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const submissions = snapshot.docs.map(doc => doc.data() as Submission);
+        
+        if (submissions.length > 0) {
+          const totalScore = submissions.reduce((acc, curr) => acc + curr.score, 0);
+          const maxScore = Math.max(...submissions.map(s => s.score));
+          setStats({
+            avg: Math.round((totalScore / submissions.length) * 10) / 10,
+            max: maxScore,
+            count: submissions.length
+          });
+        } else {
+          setStats({ avg: 0, max: 0, count: 0 });
         }
-      };
-      fetchStats();
+        setLoadingStats(false);
+      }, (error) => {
+        console.error("Error fetching stats:", error);
+        setLoadingStats(false);
+      });
+      return unsubscribe;
     }
   }, [exam.id, profile.role]);
 
@@ -686,6 +692,13 @@ const ExamCard: React.FC<{ exam: Exam, profile: UserProfile, onEdit: () => void,
                   {exam.isActive ? <PlayCircle className="w-5 h-5 rotate-90" /> : <PlayCircle className="w-5 h-5" />}
                 </button>
                 <button onClick={(e) => { e.stopPropagation(); setShowDeleteConfirm(true); }} className="p-2 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors" title="Delete"><Trash2 className="w-5 h-5" /></button>
+                <button 
+                  onClick={(e) => { e.stopPropagation(); onSummary(); }} 
+                  className="p-2 text-stone-600 hover:bg-emerald-50 hover:text-emerald-600 rounded-lg transition-colors" 
+                  title="View Summary"
+                >
+                  <LayoutDashboard className="w-5 h-5" />
+                </button>
               </div>
               <button onClick={onEdit} className="text-sm font-bold text-stone-900 flex items-center justify-center sm:justify-start gap-1 hover:gap-2 transition-all bg-white sm:bg-transparent py-2 sm:py-0 rounded-xl border border-stone-200 sm:border-transparent">
                 Manage <ChevronRight className="w-4 h-4" />
@@ -1704,6 +1717,148 @@ const ExamSession: React.FC<{ exam: Exam, profile: UserProfile, onComplete: (s: 
           </button>
         ))}
       </div>
+    </motion.div>
+  );
+};
+
+const TeacherExamSummary: React.FC<{ exam: Exam, onClose: () => void }> = ({ exam, onClose }) => {
+  const [submissions, setSubmissions] = useState<(Submission & { studentName?: string })[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [stats, setStats] = useState<{ avg: number, max: number, count: number } | null>(null);
+
+  useEffect(() => {
+    const q = query(collection(db, 'submissions'), where('examId', '==', exam.id), orderBy('timestamp', 'desc'));
+    const unsubscribe = onSnapshot(q, async (snapshot) => {
+      const subList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Submission));
+      
+      const studentIds = Array.from(new Set(subList.map(s => s.studentId)));
+      const studentNames: Record<string, string> = {};
+      
+      if (studentIds.length > 0) {
+        for (const id of studentIds) {
+          try {
+            const userDoc = await getDoc(doc(db, 'users', id));
+            if (userDoc.exists()) {
+              studentNames[id] = userDoc.data().name;
+            }
+          } catch (e) {
+            console.error("Error fetching student name:", e);
+          }
+        }
+      }
+
+      const enrichedSubmissions = subList.map(s => ({
+        ...s,
+        studentName: studentNames[s.studentId] || 'Unknown Student'
+      }));
+
+      setSubmissions(enrichedSubmissions);
+      
+      if (subList.length > 0) {
+        const totalScore = subList.reduce((acc, curr) => acc + curr.score, 0);
+        const maxScore = Math.max(...subList.map(s => s.score));
+        setStats({
+          avg: Math.round((totalScore / subList.length) * 10) / 10,
+          max: maxScore,
+          count: subList.length
+        });
+      } else {
+        setStats({ avg: 0, max: 0, count: 0 });
+      }
+      
+      setLoading(false);
+    });
+
+    return unsubscribe;
+  }, [exam.id]);
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="max-w-4xl mx-auto"
+    >
+      <div className="flex items-center justify-between mb-8">
+        <div className="flex items-center gap-4">
+          <button onClick={onClose} className="p-2 hover:bg-stone-100 rounded-xl transition-colors">
+            <ChevronLeft className="w-6 h-6" />
+          </button>
+          <div>
+            <h2 className="text-3xl font-bold tracking-tight">{exam.title}</h2>
+            <p className="text-stone-500 font-medium">Performance Summary</p>
+          </div>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="flex justify-center py-20">
+          <div className="w-12 h-12 border-4 border-stone-200 border-t-stone-800 rounded-full animate-spin"></div>
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
+            <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-stone-200 text-center">
+              <p className="text-xs font-bold text-stone-400 uppercase tracking-widest mb-2">Average Score</p>
+              <p className="text-4xl font-black text-stone-900">{stats?.avg}</p>
+            </div>
+            <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-stone-200 text-center">
+              <p className="text-xs font-bold text-stone-400 uppercase tracking-widest mb-2">Highest Score</p>
+              <p className="text-4xl font-black text-emerald-600">{stats?.max}</p>
+            </div>
+            <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-stone-200 text-center">
+              <p className="text-xs font-bold text-stone-400 uppercase tracking-widest mb-2">Total Students</p>
+              <p className="text-4xl font-black text-stone-900">{stats?.count}</p>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-[2.5rem] shadow-xl border border-stone-200 overflow-hidden">
+            <div className="px-10 py-8 border-b border-stone-100 flex justify-between items-center">
+              <h3 className="text-xl font-bold">Student Results</h3>
+              <span className="text-xs font-bold uppercase tracking-widest text-stone-400">{submissions.length} Submissions</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-stone-50">
+                    <th className="px-10 py-4 text-[10px] font-bold uppercase tracking-widest text-stone-400">Student Name</th>
+                    <th className="px-10 py-4 text-[10px] font-bold uppercase tracking-widest text-stone-400">Score</th>
+                    <th className="px-10 py-4 text-[10px] font-bold uppercase tracking-widest text-stone-400">Percentage</th>
+                    <th className="px-10 py-4 text-[10px] font-bold uppercase tracking-widest text-stone-400">Date</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-stone-100">
+                  {submissions.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="px-10 py-20 text-center text-stone-400 font-medium italic">No submissions yet for this exam.</td>
+                    </tr>
+                  ) : (
+                    submissions.map((sub) => (
+                      <tr key={sub.id} className="hover:bg-stone-50 transition-colors">
+                        <td className="px-10 py-6 font-bold text-stone-900">{sub.studentName}</td>
+                        <td className="px-10 py-6 font-mono font-bold text-stone-600">{sub.score} / {sub.totalPoints}</td>
+                        <td className="px-10 py-6">
+                          <div className="flex items-center gap-3">
+                            <div className="flex-grow h-2 bg-stone-100 rounded-full overflow-hidden max-w-[100px]">
+                              <div 
+                                className="h-full bg-emerald-500" 
+                                style={{ width: `${(sub.score / sub.totalPoints) * 100}%` }}
+                              />
+                            </div>
+                            <span className="font-bold text-stone-900">{Math.round((sub.score / sub.totalPoints) * 100)}%</span>
+                          </div>
+                        </td>
+                        <td className="px-10 py-6 text-stone-400 text-sm font-medium">
+                          {sub.timestamp?.toDate ? sub.timestamp.toDate().toLocaleDateString() : new Date(sub.timestamp).toLocaleDateString()}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
     </motion.div>
   );
 };
