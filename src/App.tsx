@@ -7,7 +7,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { 
   auth, db, googleProvider, signInWithPopup, signOut, onAuthStateChanged, 
   collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc, onSnapshot, query, where, orderBy,
-  OperationType, handleFirestoreError, User
+  OperationType, handleFirestoreError, User, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile
 } from './firebase';
 import Papa from 'papaparse';
 import { 
@@ -190,7 +190,7 @@ export default function App() {
   }
 
   if (!user) {
-    return <AuthScreen onLogin={handleLogin} />;
+    return <AuthScreen onGoogleLogin={handleLogin} />;
   }
 
   if (!profile) {
@@ -306,31 +306,126 @@ export default function App() {
 
 // --- Sub-screens ---
 
-const AuthScreen: React.FC<{ onLogin: () => void }> = ({ onLogin }) => (
-  <div className="min-h-screen flex items-center justify-center bg-[#E4E3E0] p-4">
-    <motion.div 
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="max-w-md w-full bg-white rounded-3xl shadow-2xl p-10 text-center border border-stone-200"
-    >
-      <div className="w-20 h-20 bg-stone-900 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg rotate-3">
-        <GraduationCap className="w-10 h-10 text-white" />
-      </div>
-      <h1 className="text-4xl font-bold text-stone-900 mb-2 tracking-tight">CBT Exam Pro</h1>
-      <p className="text-stone-500 mb-10 font-medium">The ultimate platform for digital assessment</p>
-      
-      <button 
-        onClick={onLogin}
-        className="w-full flex items-center justify-center gap-3 py-4 bg-stone-900 text-white rounded-2xl font-bold hover:bg-stone-800 transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-xl"
+const AuthScreen: React.FC<{ onGoogleLogin: () => void }> = ({ onGoogleLogin }) => {
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    try {
+      if (isSignUp) {
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        await updateProfile(userCredential.user, { displayName: name });
+      } else {
+        await signInWithEmailAndPassword(auth, email, password);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Authentication failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-[#E4E3E0] p-4">
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="max-w-md w-full bg-white rounded-3xl shadow-2xl p-10 border border-stone-200"
       >
-        <img src="https://www.google.com/favicon.ico" className="w-5 h-5" alt="Google" />
-        Continue with Google
-      </button>
-      
-      <p className="mt-8 text-xs text-stone-400 uppercase tracking-widest font-bold">Secure • Fast • Reliable</p>
-    </motion.div>
-  </div>
-);
+        <div className="w-20 h-20 bg-stone-900 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg rotate-3">
+          <GraduationCap className="w-10 h-10 text-white" />
+        </div>
+        <h1 className="text-4xl font-bold text-stone-900 mb-2 tracking-tight text-center">CBT Exam Pro</h1>
+        <p className="text-stone-500 mb-8 font-medium text-center">
+          {isSignUp ? 'Create your account' : 'Sign in to your account'}
+        </p>
+
+        <form onSubmit={handleSubmit} className="space-y-4 mb-6">
+          {isSignUp && (
+            <div>
+              <label className="block text-xs font-bold uppercase tracking-widest text-stone-400 mb-2">Full Name</label>
+              <input 
+                type="text" 
+                value={name} 
+                onChange={e => setName(e.target.value)}
+                className="w-full px-6 py-4 bg-stone-50 border border-stone-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-stone-900 transition-all font-medium"
+                placeholder="John Doe"
+                required
+              />
+            </div>
+          )}
+          <div>
+            <label className="block text-xs font-bold uppercase tracking-widest text-stone-400 mb-2">Email Address</label>
+            <input 
+              type="email" 
+              value={email} 
+              onChange={e => setEmail(e.target.value)}
+              className="w-full px-6 py-4 bg-stone-50 border border-stone-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-stone-900 transition-all font-medium"
+              placeholder="email@example.com"
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-bold uppercase tracking-widest text-stone-400 mb-2">Password</label>
+            <input 
+              type="password" 
+              value={password} 
+              onChange={e => setPassword(e.target.value)}
+              className="w-full px-6 py-4 bg-stone-50 border border-stone-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-stone-900 transition-all font-medium"
+              placeholder="••••••••"
+              required
+            />
+          </div>
+
+          {error && <p className="text-red-500 text-xs font-bold text-center">{error}</p>}
+
+          <button 
+            type="submit"
+            disabled={loading}
+            className="w-full py-4 bg-stone-900 text-white rounded-2xl font-bold hover:bg-stone-800 transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-xl disabled:opacity-50"
+          >
+            {loading ? 'Processing...' : (isSignUp ? 'Sign Up' : 'Sign In')}
+          </button>
+        </form>
+
+        <div className="relative mb-6">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-stone-200"></div>
+          </div>
+          <div className="relative flex justify-center text-xs uppercase">
+            <span className="bg-white px-2 text-stone-400 font-bold tracking-widest">Or continue with</span>
+          </div>
+        </div>
+        
+        <button 
+          onClick={onGoogleLogin}
+          className="w-full flex items-center justify-center gap-3 py-4 bg-white text-stone-900 border border-stone-200 rounded-2xl font-bold hover:bg-stone-50 transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-sm mb-6"
+        >
+          <img src="https://www.google.com/favicon.ico" className="w-5 h-5" alt="Google" />
+          Google Account
+        </button>
+
+        <div className="text-center">
+          <button 
+            onClick={() => setIsSignUp(!isSignUp)}
+            className="text-sm font-bold text-stone-600 hover:text-stone-900 transition-colors"
+          >
+            {isSignUp ? 'Already have an account? Sign In' : "Don't have an account? Sign Up"}
+          </button>
+        </div>
+        
+        <p className="mt-8 text-xs text-stone-400 uppercase tracking-widest font-bold text-center">Secure • Fast • Reliable</p>
+      </motion.div>
+    </div>
+  );
+};
 
 const RoleSelectionScreen: React.FC<{ onSelectRole: (role: 'teacher' | 'student') => void }> = ({ onSelectRole }) => (
   <div className="min-h-screen flex items-center justify-center bg-[#E4E3E0] p-4">
