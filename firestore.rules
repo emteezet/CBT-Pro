@@ -1,0 +1,162 @@
+rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: users
+// Document ID: {uid}
+// Fields:
+//   - uid: string (required) - Firebase Auth UID
+//   - email: string (required) - User's email address
+//   - role: string (required, 'teacher' | 'student') - User's role
+//   - name: string (optional) - User's display name
+//
+// Collection: exams
+// Document ID: {examId}
+// Fields:
+//   - title: string (required) - Exam title
+//   - description: string (optional) - Exam description
+//   - teacherId: string (required) - UID of the teacher
+//   - timeLimitMinutes: number (required, > 0) - Time limit
+//   - createdAt: timestamp (required) - Creation time
+//   - isActive: bool (required) - Whether exam is open
+//
+// Collection: exams/{examId}/questions
+// Document ID: {questionId}
+// Fields:
+//   - examId: string (required) - Parent exam ID
+//   - text: string (required) - Question text
+//   - options: list (required, size <= 10) - Multiple choice options
+//   - correctAnswerIndex: number (required, 0 to 9) - Correct option index
+//   - points: number (required, > 0) - Points for this question
+//
+// Collection: submissions
+// Document ID: {submissionId}
+// Fields:
+//   - examId: string (required) - Exam ID
+//   - studentId: string (required) - Student UID
+//   - answers: list (required) - Selected option indices
+//   - score: number (required) - Calculated score
+//   - totalPoints: number (required) - Total points
+//   - timestamp: timestamp (required) - Submission time
+//   - completed: bool (required) - Completion status
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (request.auth.token.email == "abdulmataz@gmail.com" && request.auth.token.email_verified == true);
+    }
+
+    function isTeacher() {
+      return isAuthenticated() && (
+        isAdmin() || 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher' ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+      );
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return hasOnlyAllowedFields(['uid', 'email', 'role', 'name']) &&
+             data.uid == request.auth.uid &&
+             isValidEmail(data.email) &&
+             data.role in ['teacher', 'student'];
+    }
+
+    function isValidExam(data) {
+      return hasOnlyAllowedFields(['title', 'description', 'teacherId', 'timeLimitMinutes', 'createdAt', 'isActive']) &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+             data.teacherId == request.auth.uid &&
+             data.timeLimitMinutes is number && data.timeLimitMinutes > 0 &&
+             data.createdAt is timestamp &&
+             data.isActive is bool;
+    }
+
+    function isValidQuestion(data) {
+      return hasOnlyAllowedFields(['examId', 'text', 'options', 'correctAnswerIndex', 'points']) &&
+             data.examId is string &&
+             data.text is string && data.text.size() > 0 && data.text.size() < 2000 &&
+             data.options is list && data.options.size() >= 2 && data.options.size() <= 10 &&
+             data.correctAnswerIndex is number && data.correctAnswerIndex >= 0 && data.correctAnswerIndex < data.options.size() &&
+             data.points is number && data.points > 0;
+    }
+
+    function isValidSubmission(data) {
+      return hasOnlyAllowedFields(['examId', 'studentId', 'answers', 'score', 'totalPoints', 'timestamp', 'completed']) &&
+             data.examId is string &&
+             data.studentId == request.auth.uid &&
+             data.answers is list &&
+             data.score is number &&
+             data.totalPoints is number &&
+             data.timestamp is timestamp &&
+             data.completed is bool;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (isOwner(userId) || isAdmin());
+      allow create: if isAuthenticated() && isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isAuthenticated() && isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == resource.data.role;
+    }
+
+    match /exams/{examId} {
+      allow read: if isAuthenticated();
+      allow create: if isTeacher() && isValidExam(request.resource.data);
+      allow update: if (isTeacher() && (resource.data.teacherId == request.auth.uid || isAdmin())) && isValidExam(request.resource.data);
+      allow delete: if isTeacher() && (resource.data.teacherId == request.auth.uid || isAdmin());
+
+      match /questions/{questionId} {
+        allow read: if isAuthenticated();
+        allow create: if isTeacher() && (get(/databases/$(database)/documents/exams/$(examId)).data.teacherId == request.auth.uid || isAdmin()) && isValidQuestion(request.resource.data);
+        allow update: if isTeacher() && (get(/databases/$(database)/documents/exams/$(examId)).data.teacherId == request.auth.uid || isAdmin()) && isValidQuestion(request.resource.data);
+        allow delete: if isTeacher() && (get(/databases/$(database)/documents/exams/$(examId)).data.teacherId == request.auth.uid || isAdmin());
+      }
+    }
+
+    match /submissions/{submissionId} {
+      allow read: if isAuthenticated() && (isOwner(resource.data.studentId) || isTeacher());
+      allow create: if isAuthenticated() && isValidSubmission(request.resource.data);
+      allow update: if isAuthenticated() && isOwner(resource.data.studentId) && isValidSubmission(request.resource.data);
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

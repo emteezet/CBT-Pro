@@ -1,0 +1,64 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Stores user profile information and roles.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "email": { "type": "string", "format": "email", "description": "User's email address" },
+        "role": { "type": "string", "enum": ["teacher", "student"], "description": "User's role in the system" },
+        "name": { "type": "string", "description": "User's display name" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "Exam": {
+      "title": "Exam Metadata",
+      "description": "Stores information about an exam created by a teacher.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "Exam title" },
+        "description": { "type": "string", "description": "Exam description" },
+        "teacherId": { "type": "string", "description": "UID of the teacher who created the exam" },
+        "timeLimitMinutes": { "type": "integer", "description": "Time limit in minutes" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
+        "isActive": { "type": "boolean", "description": "Whether the exam is open for students" }
+      },
+      "required": ["title", "teacherId", "timeLimitMinutes", "createdAt", "isActive"]
+    },
+    "Question": {
+      "title": "Exam Question",
+      "description": "A single question within an exam.",
+      "type": "object",
+      "properties": {
+        "examId": { "type": "string", "description": "ID of the parent exam" },
+        "text": { "type": "string", "description": "Question text" },
+        "options": { "type": "array", "items": { "type": "string" }, "description": "List of multiple choice options" },
+        "correctAnswerIndex": { "type": "integer", "description": "Index of the correct option" },
+        "points": { "type": "integer", "description": "Points awarded for this question" }
+      },
+      "required": ["examId", "text", "options", "correctAnswerIndex", "points"]
+    },
+    "Submission": {
+      "title": "Exam Submission",
+      "description": "A student's attempt at an exam.",
+      "type": "object",
+      "properties": {
+        "examId": { "type": "string", "description": "ID of the exam taken" },
+        "studentId": { "type": "string", "description": "UID of the student" },
+        "answers": { "type": "array", "items": { "type": "integer" }, "description": "Student's selected option indices" },
+        "score": { "type": "integer", "description": "Calculated score" },
+        "totalPoints": { "type": "integer", "description": "Total possible points" },
+        "timestamp": { "type": "string", "format": "date-time", "description": "Submission timestamp" },
+        "completed": { "type": "boolean", "description": "Whether the attempt was finished" }
+      },
+      "required": ["examId", "studentId", "answers", "score", "totalPoints", "timestamp", "completed"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": { "schema": "User", "description": "User profiles" },
+    "/exams/{examId}": { "schema": "Exam", "description": "Exam metadata" },
+    "/exams/{examId}/questions/{questionId}": { "schema": "Question", "description": "Questions for a specific exam" },
+    "/submissions/{submissionId}": { "schema": "Submission", "description": "Student exam attempts" }
+  }
+}
