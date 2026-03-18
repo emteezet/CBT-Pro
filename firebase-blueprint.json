@@ -19,6 +19,7 @@
       "properties": {
         "title": { "type": "string", "description": "Exam title" },
         "description": { "type": "string", "description": "Exam description" },
+        "instructions": { "type": "string", "description": "Custom instructions for students" },
         "teacherId": { "type": "string", "description": "UID of the teacher who created the exam" },
         "timeLimitMinutes": { "type": "integer", "description": "Time limit in minutes" },
         "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },

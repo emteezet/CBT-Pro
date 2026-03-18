@@ -92,13 +92,16 @@ service cloud.firestore {
       return hasOnlyAllowedFields(['uid', 'email', 'role', 'name']) &&
              data.uid == request.auth.uid &&
              isValidEmail(data.email) &&
-             data.role in ['teacher', 'student'];
+             data.role in ['teacher', 'student'] &&
+             (!('name' in data) || (data.name is string && data.name.size() < 100));
     }
 
     function isValidExam(data) {
-      return hasOnlyAllowedFields(['title', 'description', 'teacherId', 'timeLimitMinutes', 'createdAt', 'isActive']) &&
+      return hasOnlyAllowedFields(['title', 'description', 'instructions', 'teacherId', 'timeLimitMinutes', 'createdAt', 'isActive']) &&
              data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
-             data.teacherId == request.auth.uid &&
+             (!('description' in data) || data.description is string) &&
+             (!('instructions' in data) || data.instructions is string) &&
+             (request.method == 'create' ? data.teacherId == request.auth.uid : (data.teacherId == resource.data.teacherId || isAdmin())) &&
              data.timeLimitMinutes is number && data.timeLimitMinutes > 0 &&
              data.createdAt is timestamp &&
              data.isActive is bool;

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, createContext, useContext, useCallback } from 'react';
 import { 
   auth, db, googleProvider, signInWithPopup, signOut, onAuthStateChanged, 
   collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc, onSnapshot, query, where, orderBy,
@@ -11,11 +11,29 @@ import {
 } from './firebase';
 import Papa from 'papaparse';
 import { 
-  LogOut, Plus, BookOpen, Clock, CheckCircle2, AlertCircle, ChevronRight, ChevronLeft, Trash2, Edit3, Save, UserCircle, GraduationCap, LayoutDashboard, PlayCircle, Award, Upload, FileText, Download
+  LogOut, Plus, BookOpen, Clock, CheckCircle2, AlertCircle, ChevronRight, ChevronLeft, Trash2, Edit3, Save, UserCircle, GraduationCap, LayoutDashboard, PlayCircle, Award, Upload, FileText, Download, X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // --- Types ---
+
+interface Toast {
+  id: string;
+  message: string;
+  type: 'success' | 'error' | 'info';
+}
+
+interface ToastContextType {
+  showToast: (message: string, type?: 'success' | 'error' | 'info') => void;
+}
+
+const ToastContext = createContext<ToastContextType | undefined>(undefined);
+
+const useToast = () => {
+  const context = useContext(ToastContext);
+  if (!context) throw new Error('useToast must be used within a ToastProvider');
+  return context;
+};
 
 interface UserProfile {
   uid: string;
@@ -81,7 +99,68 @@ const ErrorBoundary: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   return <>{children}</>;
 };
 
+const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [toasts, setToasts] = useState<Toast[]>([]);
+
+  const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    const id = Math.random().toString(36).substring(2, 9);
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 5000);
+  }, []);
+
+  const removeToast = (id: string) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  };
+
+  return (
+    <ToastContext.Provider value={{ showToast }}>
+      {children}
+      <div className="fixed bottom-6 right-6 z-[200] flex flex-col gap-3 pointer-events-none">
+        <AnimatePresence>
+          {toasts.map(toast => (
+            <motion.div
+              key={toast.id}
+              initial={{ opacity: 0, x: 50, scale: 0.9 }}
+              animate={{ opacity: 1, x: 0, scale: 1 }}
+              exit={{ opacity: 0, x: 20, scale: 0.9 }}
+              className={`pointer-events-auto min-w-[300px] max-w-md p-4 rounded-2xl shadow-2xl border flex items-start gap-3 ${
+                toast.type === 'success' ? 'bg-emerald-50 border-emerald-100 text-emerald-800' :
+                toast.type === 'error' ? 'bg-red-50 border-red-100 text-red-800' :
+                'bg-stone-800 border-stone-700 text-white'
+              }`}
+            >
+              {toast.type === 'success' && <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5" />}
+              {toast.type === 'error' && <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />}
+              {toast.type === 'info' && <GraduationCap className="w-5 h-5 text-stone-400 shrink-0 mt-0.5" />}
+              
+              <p className="text-sm font-bold flex-grow leading-tight">{toast.message}</p>
+              
+              <button 
+                onClick={() => removeToast(toast.id)}
+                className="p-1 hover:bg-black/5 rounded-lg transition-colors shrink-0"
+              >
+                <X className="w-4 h-4 opacity-50" />
+              </button>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
+    </ToastContext.Provider>
+  );
+};
+
 export default function App() {
+  return (
+    <ToastProvider>
+      <ExamApp />
+    </ToastProvider>
+  );
+}
+
+function ExamApp() {
+  const { showToast } = useToast();
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
@@ -150,8 +229,10 @@ export default function App() {
   const handleLogin = async () => {
     try {
       await signInWithPopup(auth, googleProvider);
+      showToast('Successfully logged in with Google', 'success');
     } catch (error: any) {
       console.error('Login failed:', error);
+      showToast(getAuthErrorMessage(error.code), 'error');
       throw error; // Re-throw to be caught by AuthScreen
     }
   };
@@ -161,8 +242,10 @@ export default function App() {
       await signOut(auth);
       setView('dashboard');
       setSelectedExam(null);
+      showToast('Successfully logged out', 'success');
     } catch (error) {
       console.error('Logout failed:', error);
+      showToast('Logout failed. Please try again.', 'error');
     }
   };
 
@@ -177,7 +260,9 @@ export default function App() {
     try {
       await setDoc(doc(db, 'users', user.uid), newProfile);
       setProfile(newProfile);
+      showToast(`Welcome! You are now registered as a ${role}.`, 'success');
     } catch (error) {
+      showToast('Failed to save profile. Please try again.', 'error');
       handleFirestoreError(error, OperationType.CREATE, `users/${user.uid}`);
     }
   };
@@ -344,6 +429,7 @@ const getAuthErrorMessage = (code: string) => {
 };
 
 const AuthScreen: React.FC<{ onGoogleLogin: () => Promise<void> }> = ({ onGoogleLogin }) => {
+  const { showToast } = useToast();
   const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -368,11 +454,15 @@ const AuthScreen: React.FC<{ onGoogleLogin: () => Promise<void> }> = ({ onGoogle
       if (isSignUp) {
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         await updateProfile(userCredential.user, { displayName: name });
+        showToast('Account created successfully!', 'success');
       } else {
         await signInWithEmailAndPassword(auth, email, password);
+        showToast('Signed in successfully!', 'success');
       }
     } catch (err: any) {
-      setError(getAuthErrorMessage(err.code));
+      const msg = getAuthErrorMessage(err.code);
+      setError(msg);
+      showToast(msg, 'error');
     } finally {
       setLoading(false);
     }
@@ -384,7 +474,9 @@ const AuthScreen: React.FC<{ onGoogleLogin: () => Promise<void> }> = ({ onGoogle
     try {
       await onGoogleLogin();
     } catch (err: any) {
-      setError(getAuthErrorMessage(err.code));
+      const msg = getAuthErrorMessage(err.code);
+      setError(msg);
+      showToast(msg, 'error');
     } finally {
       setLoading(false);
     }
@@ -577,6 +669,7 @@ const Navbar: React.FC<{ profile: UserProfile, onLogout: () => void, setView: (v
 );
 
 const Dashboard: React.FC<{ profile: UserProfile, setView: (v: any) => void, setSelectedExam: (e: Exam) => void }> = ({ profile, setView, setSelectedExam }) => {
+  const { showToast } = useToast();
   const [exams, setExams] = useState<Exam[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -590,6 +683,7 @@ const Dashboard: React.FC<{ profile: UserProfile, setView: (v: any) => void, set
       setExams(examList);
       setLoading(false);
     }, (error) => {
+      showToast('Failed to load exams. Please check your permissions.', 'error');
       handleFirestoreError(error, OperationType.LIST, 'exams');
     });
 
@@ -664,6 +758,7 @@ const Dashboard: React.FC<{ profile: UserProfile, setView: (v: any) => void, set
 };
 
 const ExamCard: React.FC<{ exam: Exam, profile: UserProfile, onEdit: () => void, onTake: () => void, onSummary: () => void }> = ({ exam, profile, onEdit, onTake, onSummary }) => {
+  const { showToast } = useToast();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [stats, setStats] = useState<{ avg: number, max: number, count: number } | null>(null);
   const [loadingStats, setLoadingStats] = useState(false);
@@ -697,8 +792,11 @@ const ExamCard: React.FC<{ exam: Exam, profile: UserProfile, onEdit: () => void,
   const toggleActive = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await updateDoc(doc(db, 'exams', exam.id), { isActive: !exam.isActive });
+      const newStatus = !exam.isActive;
+      await updateDoc(doc(db, 'exams', exam.id), { isActive: newStatus });
+      showToast(`Exam ${newStatus ? 'activated' : 'deactivated'} successfully`, 'success');
     } catch (error) {
+      showToast('Failed to update exam status', 'error');
       handleFirestoreError(error, OperationType.UPDATE, `exams/${exam.id}`);
     }
   };
@@ -707,7 +805,9 @@ const ExamCard: React.FC<{ exam: Exam, profile: UserProfile, onEdit: () => void,
     try {
       await deleteDoc(doc(db, 'exams', exam.id));
       setShowDeleteConfirm(false);
+      showToast('Exam deleted successfully', 'success');
     } catch (error) {
+      showToast('Failed to delete exam', 'error');
       handleFirestoreError(error, OperationType.DELETE, `exams/${exam.id}`);
     }
   };
@@ -821,6 +921,7 @@ const ExamCard: React.FC<{ exam: Exam, profile: UserProfile, onEdit: () => void,
 };
 
 const ExamCreator: React.FC<{ profile: UserProfile, onClose: () => void }> = ({ profile, onClose }) => {
+  const { showToast } = useToast();
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [instructions, setInstructions] = useState('');
@@ -841,8 +942,10 @@ const ExamCreator: React.FC<{ profile: UserProfile, onClose: () => void }> = ({ 
         createdAt: new Date(),
         isActive: false
       });
+      showToast('Exam created successfully', 'success');
       onClose();
     } catch (error) {
+      showToast('Failed to create exam', 'error');
       handleFirestoreError(error, OperationType.CREATE, 'exams');
     } finally {
       setLoading(false);
@@ -930,6 +1033,7 @@ interface BulkUploadError {
 }
 
 const QuestionEditor: React.FC<{ exam: Exam, onClose: () => void }> = ({ exam, onClose }) => {
+  const { showToast } = useToast();
   const [questions, setQuestions] = useState<Question[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingQuestion, setEditingQuestion] = useState<Partial<Question> | null>(null);
@@ -962,6 +1066,7 @@ const QuestionEditor: React.FC<{ exam: Exam, onClose: () => void }> = ({ exam, o
       if (editingQuestion.id) {
         const { id, ...data } = editingQuestion;
         await updateDoc(doc(db, 'exams', exam.id, 'questions', id!), data);
+        showToast('Question updated successfully', 'success');
       } else {
         await addDoc(collection(db, 'exams', exam.id, 'questions'), {
           examId: exam.id,
@@ -970,9 +1075,11 @@ const QuestionEditor: React.FC<{ exam: Exam, onClose: () => void }> = ({ exam, o
           correctAnswerIndex: editingQuestion.correctAnswerIndex,
           points: editingQuestion.points || 1
         });
+        showToast('Question added successfully', 'success');
       }
       setEditingQuestion(null);
     } catch (error) {
+      showToast('Failed to save question', 'error');
       handleFirestoreError(error, OperationType.WRITE, `exams/${exam.id}/questions`);
     }
   };
@@ -982,7 +1089,9 @@ const QuestionEditor: React.FC<{ exam: Exam, onClose: () => void }> = ({ exam, o
     try {
       await deleteDoc(doc(db, 'exams', exam.id, 'questions', deletingQuestionId));
       setDeletingQuestionId(null);
+      showToast('Question deleted successfully', 'success');
     } catch (error) {
+      showToast('Failed to delete question', 'error');
       handleFirestoreError(error, OperationType.DELETE, `exams/${exam.id}/questions/${deletingQuestionId}`);
     }
   };
@@ -997,8 +1106,10 @@ const QuestionEditor: React.FC<{ exam: Exam, onClose: () => void }> = ({ exam, o
         instructions: examInstr,
         timeLimitMinutes: Number(examTime)
       });
+      showToast('Exam details updated successfully', 'success');
       setIsEditingExam(false);
     } catch (error) {
+      showToast('Failed to update exam details', 'error');
       handleFirestoreError(error, OperationType.UPDATE, `exams/${exam.id}`);
     } finally {
       setSavingExam(false);
@@ -1068,8 +1179,10 @@ const QuestionEditor: React.FC<{ exam: Exam, onClose: () => void }> = ({ exam, o
             count++;
           }
           setBulkUploadSuccess(count);
+          showToast(`Successfully uploaded ${count} questions`, 'success');
         } catch (error) {
           setBulkUploadErrors([{ row: 0, message: 'Failed to upload questions to database. Please check your connection.' }]);
+          showToast('Bulk upload failed', 'error');
           console.error(error);
         } finally {
           setIsBulkUploading(false);
@@ -1424,6 +1537,7 @@ const QuestionEditor: React.FC<{ exam: Exam, onClose: () => void }> = ({ exam, o
 };
 
 const ExamSession: React.FC<{ exam: Exam, profile: UserProfile, onComplete: (s: Submission) => void }> = ({ exam, profile, onComplete }) => {
+  const { showToast } = useToast();
   const [questions, setQuestions] = useState<Question[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState<number[]>([]);
@@ -1443,6 +1557,7 @@ const ExamSession: React.FC<{ exam: Exam, profile: UserProfile, onComplete: (s: 
         setAnswers(new Array(qList.length).fill(-1));
         setLoading(false);
       } catch (error) {
+        showToast('Failed to load questions. Please try again.', 'error');
         handleFirestoreError(error, OperationType.LIST, `exams/${exam.id}/questions`);
       }
     };
@@ -1558,8 +1673,10 @@ const ExamSession: React.FC<{ exam: Exam, profile: UserProfile, onComplete: (s: 
 
     try {
       const docRef = await addDoc(collection(db, 'submissions'), submission);
+      showToast('Exam submitted successfully!', 'success');
       onComplete({ id: docRef.id, ...submission });
     } catch (error) {
+      showToast('Failed to submit exam. Please check your connection.', 'error');
       handleFirestoreError(error, OperationType.CREATE, 'submissions');
     } finally {
       setSubmitting(false);
@@ -1988,6 +2105,7 @@ const ResultsView: React.FC<{ submission: Submission, onClose: () => void }> = (
 };
 
 const StudentResultsDashboard: React.FC<{ profile: UserProfile, onSelectSubmission: (s: Submission) => void, onClose: () => void }> = ({ profile, onSelectSubmission, onClose }) => {
+  const { showToast } = useToast();
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [exams, setExams] = useState<Record<string, Exam>>({});
   const [loading, setLoading] = useState(true);
@@ -2017,6 +2135,7 @@ const StudentResultsDashboard: React.FC<{ profile: UserProfile, onSelectSubmissi
       setExams(examMap);
       setLoading(false);
     }, (error) => {
+      showToast('Failed to load results. Please try again.', 'error');
       handleFirestoreError(error, OperationType.LIST, 'submissions');
     });
 
