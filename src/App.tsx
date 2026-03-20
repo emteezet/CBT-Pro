@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo, createContext, useContext, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, createContext, useContext, useCallback, useRef } from 'react';
 import { 
   auth, db, googleProvider, signInWithPopup, signOut, onAuthStateChanged, 
   collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc, onSnapshot, query, where, orderBy,
@@ -53,12 +53,16 @@ interface Exam {
   isActive: boolean;
 }
 
+type QuestionType = 'multiple-choice' | 'true-false' | 'short-answer';
+
 interface Question {
   id: string;
   examId: string;
   text: string;
-  options: string[];
-  correctAnswerIndex: number;
+  type: QuestionType;
+  options?: string[];
+  correctAnswerIndex?: number;
+  correctAnswer?: string;
   points: number;
 }
 
@@ -66,7 +70,7 @@ interface Submission {
   id: string;
   examId: string;
   studentId: string;
-  answers: number[];
+  answers: (number | string)[];
   score: number;
   totalPoints: number;
   timestamp: any;
@@ -374,7 +378,7 @@ function ExamApp() {
                 </div>
                 <h3 className="text-2xl font-bold text-stone-900 mb-3">Exit Active Exam?</h3>
                 <p className="text-stone-500 mb-8 leading-relaxed">
-                  Your progress will not be saved. Are you sure you want to leave the exam session?
+                  Your progress is being auto-saved, but leaving now will interrupt your session. Are you sure you want to leave?
                 </p>
                 <div className="flex flex-col gap-3">
                   <button 
@@ -1041,6 +1045,7 @@ const QuestionEditor: React.FC<{ exam: Exam, onClose: () => void }> = ({ exam, o
   const [isBulkUploading, setIsBulkUploading] = useState(false);
   const [bulkUploadErrors, setBulkUploadErrors] = useState<BulkUploadError[]>([]);
   const [bulkUploadSuccess, setBulkUploadSuccess] = useState<number | null>(null);
+  const [bulkUploadProgress, setBulkUploadProgress] = useState<{ current: number, total: number } | null>(null);
   const [isEditingExam, setIsEditingExam] = useState(false);
   const [examTitle, setExamTitle] = useState(exam.title);
   const [examDesc, setExamDesc] = useState(exam.description);
@@ -1060,21 +1065,33 @@ const QuestionEditor: React.FC<{ exam: Exam, onClose: () => void }> = ({ exam, o
 
   const handleSaveQuestion = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingQuestion?.text || !editingQuestion.options || editingQuestion.correctAnswerIndex === undefined) return;
+    if (!editingQuestion?.text) return;
     
+    const type = editingQuestion.type || 'multiple-choice';
+    const points = editingQuestion.points || 1;
+    
+    let questionData: any = {
+      examId: exam.id,
+      text: editingQuestion.text,
+      type,
+      points
+    };
+
+    if (type === 'multiple-choice' || type === 'true-false') {
+      if (!editingQuestion.options || editingQuestion.correctAnswerIndex === undefined) return;
+      questionData.options = editingQuestion.options;
+      questionData.correctAnswerIndex = editingQuestion.correctAnswerIndex;
+    } else if (type === 'short-answer') {
+      if (editingQuestion.correctAnswer === undefined) return;
+      questionData.correctAnswer = editingQuestion.correctAnswer;
+    }
+
     try {
       if (editingQuestion.id) {
-        const { id, ...data } = editingQuestion;
-        await updateDoc(doc(db, 'exams', exam.id, 'questions', id!), data);
+        await updateDoc(doc(db, 'exams', exam.id, 'questions', editingQuestion.id), questionData);
         showToast('Question updated successfully', 'success');
       } else {
-        await addDoc(collection(db, 'exams', exam.id, 'questions'), {
-          examId: exam.id,
-          text: editingQuestion.text,
-          options: editingQuestion.options,
-          correctAnswerIndex: editingQuestion.correctAnswerIndex,
-          points: editingQuestion.points || 1
-        });
+        await addDoc(collection(db, 'exams', exam.id, 'questions'), questionData);
         showToast('Question added successfully', 'success');
       }
       setEditingQuestion(null);
@@ -1122,6 +1139,7 @@ const QuestionEditor: React.FC<{ exam: Exam, onClose: () => void }> = ({ exam, o
 
     setBulkUploadErrors([]);
     setBulkUploadSuccess(null);
+    setBulkUploadProgress(null);
     setIsBulkUploading(true);
 
     Papa.parse(file, {
@@ -1134,35 +1152,48 @@ const QuestionEditor: React.FC<{ exam: Exam, onClose: () => void }> = ({ exam, o
         results.data.forEach((row: any, index) => {
           const rowNum = index + 1;
           const text = row.text?.trim();
-          const options = [
-            row.optionA?.trim(),
-            row.optionB?.trim(),
-            row.optionC?.trim(),
-            row.optionD?.trim()
-          ].filter(Boolean);
-          const correctAnswerIndex = parseInt(row.correctAnswerIndex);
+          const type = (row.type?.trim().toLowerCase() || 'multiple-choice') as QuestionType;
           const points = parseInt(row.points) || 1;
-
+          
           if (!text) {
             errors.push({ row: rowNum, message: 'Missing question text' });
+            return;
           }
-          if (options.length < 2) {
-            errors.push({ row: rowNum, message: `At least 2 options are required (found ${options.length})` });
-          }
-          if (isNaN(correctAnswerIndex)) {
-            errors.push({ row: rowNum, message: 'Correct answer index must be a number' });
-          } else if (correctAnswerIndex < 0 || correctAnswerIndex >= options.length) {
-            errors.push({ row: rowNum, message: `Invalid correct answer index ${correctAnswerIndex} (must be between 0 and ${options.length - 1})` });
+
+          const qData: any = { examId: exam.id, text, type, points };
+
+          if (type === 'multiple-choice' || type === 'true-false') {
+            const options = [
+              row.optionA?.trim(),
+              row.optionB?.trim(),
+              row.optionC?.trim(),
+              row.optionD?.trim()
+            ].filter(Boolean);
+            const correctAnswerIndex = parseInt(row.correctAnswerIndex);
+
+            if (options.length < 2) {
+              errors.push({ row: rowNum, message: `At least 2 options are required for ${type} (found ${options.length})` });
+            }
+            if (isNaN(correctAnswerIndex)) {
+              errors.push({ row: rowNum, message: 'Correct answer index must be a number' });
+            } else if (correctAnswerIndex < 0 || correctAnswerIndex >= options.length) {
+              errors.push({ row: rowNum, message: `Invalid correct answer index ${correctAnswerIndex} (must be between 0 and ${options.length - 1})` });
+            }
+            
+            qData.options = options;
+            qData.correctAnswerIndex = correctAnswerIndex;
+          } else if (type === 'short-answer') {
+            const correctAnswer = row.correctAnswer?.trim();
+            if (!correctAnswer) {
+              errors.push({ row: rowNum, message: 'Missing correct answer for short-answer question' });
+            }
+            qData.correctAnswer = correctAnswer;
+          } else {
+            errors.push({ row: rowNum, message: `Invalid question type: ${type}` });
           }
 
           if (errors.filter(e => e.row === rowNum).length === 0) {
-            questionsToUpload.push({
-              examId: exam.id,
-              text,
-              options,
-              correctAnswerIndex,
-              points
-            });
+            questionsToUpload.push(qData);
           }
         });
 
@@ -1174,9 +1205,13 @@ const QuestionEditor: React.FC<{ exam: Exam, onClose: () => void }> = ({ exam, o
 
         try {
           let count = 0;
+          const total = questionsToUpload.length;
+          setBulkUploadProgress({ current: 0, total });
+
           for (const q of questionsToUpload) {
             await addDoc(collection(db, 'exams', exam.id, 'questions'), q);
             count++;
+            setBulkUploadProgress({ current: count, total });
           }
           setBulkUploadSuccess(count);
           showToast(`Successfully uploaded ${count} questions`, 'success');
@@ -1186,6 +1221,7 @@ const QuestionEditor: React.FC<{ exam: Exam, onClose: () => void }> = ({ exam, o
           console.error(error);
         } finally {
           setIsBulkUploading(false);
+          setBulkUploadProgress(null);
           e.target.value = '';
         }
       },
@@ -1197,7 +1233,7 @@ const QuestionEditor: React.FC<{ exam: Exam, onClose: () => void }> = ({ exam, o
   };
 
   const downloadTemplate = () => {
-    const csvContent = "text,optionA,optionB,optionC,optionD,correctAnswerIndex,points\nWhat is 2+2?,3,4,5,6,1,1\nWhich planet is known as the Red Planet?,Mars,Venus,Jupiter,Saturn,0,1";
+    const csvContent = "text,type,optionA,optionB,optionC,optionD,correctAnswerIndex,correctAnswer,points\nWhat is 2+2?,multiple-choice,3,4,5,6,1,,1\nIs the Earth flat?,true-false,True,False,,,1,,1\nWhat is the capital of France?,short-answer,,,,,,Paris,1";
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement("a");
     const url = URL.createObjectURL(blob);
@@ -1247,7 +1283,7 @@ const QuestionEditor: React.FC<{ exam: Exam, onClose: () => void }> = ({ exam, o
             </button>
           </div>
           <button 
-            onClick={() => setEditingQuestion({ text: '', options: ['', '', '', ''], correctAnswerIndex: 0, points: 1 })}
+            onClick={() => setEditingQuestion({ text: '', type: 'multiple-choice', options: ['', '', '', ''], correctAnswerIndex: 0, points: 1 })}
             className="w-full sm:w-auto flex items-center justify-center gap-2 px-6 py-3 bg-stone-900 text-white rounded-2xl font-bold hover:bg-stone-800 transition-all shadow-lg"
           >
             <Plus className="w-5 h-5" />
@@ -1256,28 +1292,75 @@ const QuestionEditor: React.FC<{ exam: Exam, onClose: () => void }> = ({ exam, o
         </div>
       </div>
 
+      {isBulkUploading && bulkUploadProgress && (
+        <div className="bg-stone-900 text-white p-8 rounded-3xl shadow-2xl flex flex-col gap-4">
+          <div className="flex justify-between items-center">
+            <div className="flex items-center gap-3">
+              <div className="w-6 h-6 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+              <h4 className="font-bold">Uploading Questions...</h4>
+            </div>
+            <span className="text-stone-400 font-bold">{bulkUploadProgress.current} / {bulkUploadProgress.total}</span>
+          </div>
+          <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
+            <motion.div 
+              initial={{ width: 0 }}
+              animate={{ width: `${(bulkUploadProgress.current / bulkUploadProgress.total) * 100}%` }}
+              className="h-full bg-white"
+            />
+          </div>
+        </div>
+      )}
+
       {bulkUploadErrors.length > 0 && (
-        <div className="bg-red-50 border border-red-100 p-6 rounded-3xl flex items-start gap-4">
-          <AlertCircle className="w-6 h-6 text-red-600 flex-shrink-0 mt-1" />
+        <div className="bg-red-50 border border-red-100 p-8 rounded-[2rem] flex items-start gap-6">
+          <div className="w-12 h-12 bg-red-100 rounded-2xl flex items-center justify-center flex-shrink-0">
+            <AlertCircle className="w-6 h-6 text-red-600" />
+          </div>
           <div className="flex-grow">
-            <h4 className="text-red-900 font-bold mb-3">Bulk Upload Failed</h4>
-            <div className="space-y-2 max-h-60 overflow-y-auto pr-2">
+            <div className="flex justify-between items-start mb-4">
+              <div>
+                <h4 className="text-red-900 font-bold text-xl">Bulk Upload Errors</h4>
+                <p className="text-red-700 text-sm font-medium mt-1">We found {bulkUploadErrors.length} issues in your CSV file. Please fix them and try again.</p>
+              </div>
+              <button onClick={() => setBulkUploadErrors([])} className="p-2 text-red-400 hover:text-red-600 hover:bg-red-100/50 rounded-xl transition-all">
+                <Plus className="w-6 h-6 rotate-45" />
+              </button>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-80 overflow-y-auto pr-4 custom-scrollbar">
               {bulkUploadErrors.map((err, i) => (
-                <div key={i} className="flex gap-3 text-sm font-medium">
+                <motion.div 
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: i * 0.05 }}
+                  key={i} 
+                  className="flex items-start gap-3 p-4 bg-white border border-red-100 rounded-2xl shadow-sm"
+                >
                   {err.row > 0 && (
-                    <span className="bg-red-100 text-red-700 px-2 py-0.5 rounded-lg text-[10px] font-bold h-fit mt-0.5">
-                      ROW {err.row}
+                    <span className="bg-red-600 text-white px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-tighter h-fit mt-0.5">
+                      R{err.row}
                     </span>
                   )}
-                  <span className="text-red-700">{err.message}</span>
-                </div>
+                  <span className="text-red-800 text-sm font-bold leading-tight">{err.message}</span>
+                </motion.div>
               ))}
             </div>
-            <button onClick={downloadTemplate} className="mt-6 text-red-900 font-bold text-xs uppercase tracking-widest flex items-center gap-2 hover:underline">
-              <Download className="w-4 h-4" /> Download Template
-            </button>
+
+            <div className="flex gap-4 mt-8">
+              <button 
+                onClick={downloadTemplate} 
+                className="px-6 py-3 bg-red-600 text-white rounded-xl font-bold text-sm flex items-center gap-2 hover:bg-red-700 transition-all shadow-lg shadow-red-200"
+              >
+                <Download className="w-4 h-4" /> Download Correct Template
+              </button>
+              <button 
+                onClick={() => setBulkUploadErrors([])}
+                className="px-6 py-3 bg-white text-red-600 border border-red-200 rounded-xl font-bold text-sm hover:bg-red-50 transition-all"
+              >
+                Dismiss
+              </button>
+            </div>
           </div>
-          <button onClick={() => setBulkUploadErrors([])} className="text-red-400 hover:text-red-600"><Plus className="w-5 h-5 rotate-45" /></button>
         </div>
       )}
 
@@ -1383,18 +1466,36 @@ const QuestionEditor: React.FC<{ exam: Exam, onClose: () => void }> = ({ exam, o
                 <div className="flex gap-4">
                   <span className="text-4xl font-serif italic text-stone-100 font-bold">{idx + 1}</span>
                   <div className="flex-grow">
-                    <p className="text-lg font-bold text-stone-900 mb-6 pr-16">{q.text}</p>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      {q.options.map((opt, i) => (
-                        <div key={i} className={`px-4 py-3 rounded-xl text-sm font-medium border ${i === q.correctAnswerIndex ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-stone-50 border-stone-100 text-stone-600'}`}>
-                          <span className="inline-block w-6 h-6 rounded-lg bg-white border border-inherit flex items-center justify-center mr-3 text-[10px] font-bold uppercase">
-                            {String.fromCharCode(65 + i)}
-                          </span>
-                          {opt}
-                          {i === q.correctAnswerIndex && <CheckCircle2 className="w-4 h-4 inline-block ml-2" />}
-                        </div>
-                      ))}
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold uppercase tracking-wider ${
+                        q.type === 'multiple-choice' ? 'bg-blue-50 text-blue-600' :
+                        q.type === 'true-false' ? 'bg-purple-50 text-purple-600' :
+                        'bg-amber-50 text-amber-600'
+                      }`}>
+                        {q.type || 'multiple-choice'}
+                      </span>
+                      <span className="text-xs font-bold text-stone-400">{q.points} {q.points === 1 ? 'pt' : 'pts'}</span>
                     </div>
+                    <p className="text-lg font-bold text-stone-900 mb-6 pr-16">{q.text}</p>
+                    
+                    {q.type === 'short-answer' ? (
+                      <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-2xl">
+                        <p className="text-xs font-bold text-emerald-600 uppercase tracking-widest mb-1">Correct Answer</p>
+                        <p className="text-emerald-900 font-bold">{q.correctAnswer}</p>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {q.options?.map((opt, i) => (
+                          <div key={i} className={`px-4 py-3 rounded-xl text-sm font-medium border ${i === q.correctAnswerIndex ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-stone-50 border-stone-100 text-stone-600'}`}>
+                            <span className="inline-block w-6 h-6 rounded-lg bg-white border border-inherit flex items-center justify-center mr-3 text-[10px] font-bold uppercase">
+                              {q.type === 'true-false' ? (i === 0 ? 'T' : 'F') : String.fromCharCode(65 + i)}
+                            </span>
+                            {opt}
+                            {i === q.correctAnswerIndex && <CheckCircle2 className="w-4 h-4 inline-block ml-2" />}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1435,6 +1536,53 @@ const QuestionEditor: React.FC<{ exam: Exam, onClose: () => void }> = ({ exam, o
               <div className="p-8 max-h-[90vh] overflow-y-auto">
                 <h3 className="text-2xl font-bold mb-8">{editingQuestion.id ? 'Edit Question' : 'New Question'}</h3>
                 <form onSubmit={handleSaveQuestion} className="space-y-6">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-widest text-stone-400 mb-2">Question Type</label>
+                      <select 
+                        value={editingQuestion.type || 'multiple-choice'} 
+                        onChange={e => {
+                          const type = e.target.value as QuestionType;
+                          const updates: Partial<Question> = { type };
+                          if (type === 'multiple-choice') {
+                            // If switching from true-false, or if current options are not 4, reset to 4 options
+                            if (editingQuestion.type === 'true-false' || !editingQuestion.options || editingQuestion.options.length !== 4) {
+                              updates.options = ['', '', '', ''];
+                              updates.correctAnswerIndex = 0;
+                            } else {
+                              updates.options = editingQuestion.options;
+                              updates.correctAnswerIndex = editingQuestion.correctAnswerIndex ?? 0;
+                            }
+                          } else if (type === 'true-false') {
+                            updates.options = ['True', 'False'];
+                            updates.correctAnswerIndex = (editingQuestion.correctAnswerIndex ?? 0) < 2 ? (editingQuestion.correctAnswerIndex ?? 0) : 0;
+                          } else if (type === 'short-answer') {
+                            updates.correctAnswer = editingQuestion.correctAnswer || '';
+                            updates.options = undefined;
+                            updates.correctAnswerIndex = undefined;
+                          }
+                          setEditingQuestion({ ...editingQuestion, ...updates });
+                        }}
+                        className="w-full px-6 py-4 bg-stone-50 border border-stone-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-stone-900 transition-all font-medium"
+                      >
+                        <option value="multiple-choice">Multiple Choice</option>
+                        <option value="true-false">True / False</option>
+                        <option value="short-answer">Short Answer</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-widest text-stone-400 mb-2">Points</label>
+                      <input 
+                        type="number" 
+                        value={editingQuestion.points} 
+                        onChange={e => setEditingQuestion({ ...editingQuestion, points: Number(e.target.value) })}
+                        className="w-full px-6 py-4 bg-stone-50 border border-stone-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-stone-900 transition-all font-medium"
+                        min="1"
+                        required
+                      />
+                    </div>
+                  </div>
+
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-widest text-stone-400 mb-2">Question Text</label>
                     <textarea 
@@ -1446,46 +1594,54 @@ const QuestionEditor: React.FC<{ exam: Exam, onClose: () => void }> = ({ exam, o
                     />
                   </div>
                   
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {editingQuestion.options?.map((opt, i) => (
-                      <div key={i}>
-                        <label className="block text-xs font-bold uppercase tracking-widest text-stone-400 mb-2 flex justify-between">
-                          Option {String.fromCharCode(65 + i)}
+                  {(editingQuestion.type === 'multiple-choice' || editingQuestion.type === 'true-false') && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {editingQuestion.options?.map((opt, i) => (
+                        <div key={i}>
+                          <label className="block text-xs font-bold uppercase tracking-widest text-stone-400 mb-2 flex justify-between">
+                            {editingQuestion.type === 'true-false' ? (i === 0 ? 'True' : 'False') : `Option ${String.fromCharCode(65 + i)}`}
+                            <input 
+                              type="radio" 
+                              name="correct" 
+                              checked={editingQuestion.correctAnswerIndex === i}
+                              onChange={() => setEditingQuestion({ ...editingQuestion, correctAnswerIndex: i })}
+                              className="w-4 h-4 accent-stone-900"
+                            />
+                          </label>
                           <input 
-                            type="radio" 
-                            name="correct" 
-                            checked={editingQuestion.correctAnswerIndex === i}
-                            onChange={() => setEditingQuestion({ ...editingQuestion, correctAnswerIndex: i })}
-                            className="w-4 h-4 accent-stone-900"
+                            type="text" 
+                            value={opt} 
+                            onChange={e => {
+                              const newOpts = [...(editingQuestion.options || [])];
+                              newOpts[i] = e.target.value;
+                              setEditingQuestion({ ...editingQuestion, options: newOpts });
+                            }}
+                            className={`w-full px-4 py-3 rounded-xl border transition-all font-medium ${editingQuestion.correctAnswerIndex === i ? 'bg-emerald-50 border-emerald-200' : 'bg-stone-50 border-stone-200'}`}
+                            placeholder={editingQuestion.type === 'true-false' ? (i === 0 ? 'True' : 'False') : `Option ${i + 1}`}
+                            required
+                            disabled={editingQuestion.type === 'true-false'}
                           />
-                        </label>
-                        <input 
-                          type="text" 
-                          value={opt} 
-                          onChange={e => {
-                            const newOpts = [...(editingQuestion.options || [])];
-                            newOpts[i] = e.target.value;
-                            setEditingQuestion({ ...editingQuestion, options: newOpts });
-                          }}
-                          className={`w-full px-4 py-3 rounded-xl border transition-all font-medium ${editingQuestion.correctAnswerIndex === i ? 'bg-emerald-50 border-emerald-200' : 'bg-stone-50 border-stone-200'}`}
-                          placeholder={`Option ${i + 1}`}
-                          required
-                        />
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="flex justify-between items-center pt-4">
-                    <div className="flex items-center gap-3">
-                      <label className="text-xs font-bold uppercase tracking-widest text-stone-400">Points:</label>
-                      <input 
-                        type="number" 
-                        value={editingQuestion.points} 
-                        onChange={e => setEditingQuestion({ ...editingQuestion, points: Number(e.target.value) })}
-                        className="w-20 px-4 py-2 bg-stone-50 border border-stone-200 rounded-xl focus:outline-none"
-                        min="1"
-                      />
+                        </div>
+                      ))}
                     </div>
+                  )}
+
+                  {editingQuestion.type === 'short-answer' && (
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-widest text-stone-400 mb-2">Correct Answer</label>
+                      <input 
+                        type="text" 
+                        value={editingQuestion.correctAnswer || ''} 
+                        onChange={e => setEditingQuestion({ ...editingQuestion, correctAnswer: e.target.value })}
+                        className="w-full px-6 py-4 bg-stone-50 border border-stone-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-stone-900 transition-all font-medium"
+                        placeholder="Enter the correct answer..."
+                        required
+                      />
+                      <p className="mt-2 text-xs text-stone-400 italic">Note: Grading is case-insensitive and ignores leading/trailing whitespace.</p>
+                    </div>
+                  )}
+
+                  <div className="flex justify-end items-center pt-4">
                     <div className="flex gap-3">
                       <button type="button" onClick={() => setEditingQuestion(null)} className="px-6 py-3 bg-stone-100 text-stone-600 rounded-xl font-bold hover:bg-stone-200 transition-all">Cancel</button>
                       <button type="submit" className="px-8 py-3 bg-stone-900 text-white rounded-xl font-bold hover:bg-stone-800 transition-all shadow-lg flex items-center gap-2">
@@ -1540,29 +1696,99 @@ const ExamSession: React.FC<{ exam: Exam, profile: UserProfile, onComplete: (s: 
   const { showToast } = useToast();
   const [questions, setQuestions] = useState<Question[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [answers, setAnswers] = useState<number[]>([]);
+  const [answers, setAnswers] = useState<(number | string)[]>([]);
   const [timeLeft, setTimeLeft] = useState(exam.timeLimitMinutes * 60);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);
   const [showInstructions, setShowInstructions] = useState(!!exam.instructions);
+  const [submissionId, setSubmissionId] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [lastSaved, setLastSaved] = useState<Date | null>(null);
+  const answersRef = useRef(answers);
 
   useEffect(() => {
-    const fetchQuestions = async () => {
+    answersRef.current = answers;
+  }, [answers]);
+
+  useEffect(() => {
+    const fetchExamData = async () => {
       try {
         const q = query(collection(db, 'exams', exam.id, 'questions'));
         const snapshot = await getDocs(q);
         const qList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Question));
         setQuestions(qList);
-        setAnswers(new Array(qList.length).fill(-1));
+        
+        // Check for existing incomplete submission
+        const subQuery = query(
+          collection(db, 'submissions'),
+          where('examId', '==', exam.id),
+          where('studentId', '==', profile.uid),
+          where('completed', '==', false)
+        );
+        const subSnapshot = await getDocs(subQuery);
+        
+        if (!subSnapshot.empty) {
+          const draft = subSnapshot.docs[0];
+          const draftData = draft.data() as Submission;
+          setSubmissionId(draft.id);
+          if (draftData.answers && draftData.answers.length === qList.length) {
+            setAnswers(draftData.answers);
+            showToast('Resuming your previous progress...', 'info');
+          } else {
+            setAnswers(new Array(qList.length).fill(-1));
+          }
+        } else {
+          setAnswers(new Array(qList.length).fill(-1));
+        }
+        
         setLoading(false);
       } catch (error) {
-        showToast('Failed to load questions. Please try again.', 'error');
-        handleFirestoreError(error, OperationType.LIST, `exams/${exam.id}/questions`);
+        showToast('Failed to load exam data. Please try again.', 'error');
+        handleFirestoreError(error, OperationType.LIST, `exams/${exam.id}`);
       }
     };
-    fetchQuestions();
-  }, [exam.id]);
+    fetchExamData();
+  }, [exam.id, profile.uid]);
+
+  const autoSave = useCallback(async (currentAnswers: (number | string)[]) => {
+    if (loading || submitting || showInstructions || questions.length === 0) return;
+    
+    setIsSaving(true);
+    const submissionData = {
+      examId: exam.id,
+      studentId: profile.uid,
+      answers: currentAnswers,
+      score: 0,
+      totalPoints: questions.reduce((acc, q) => acc + q.points, 0),
+      timestamp: new Date(),
+      completed: false
+    };
+
+    try {
+      if (submissionId) {
+        await updateDoc(doc(db, 'submissions', submissionId), submissionData);
+      } else {
+        const docRef = await addDoc(collection(db, 'submissions'), submissionData);
+        setSubmissionId(docRef.id);
+      }
+      setLastSaved(new Date());
+    } catch (error) {
+      console.error('Auto-save failed:', error);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [loading, submitting, showInstructions, questions, submissionId, exam.id, profile.uid]);
+
+  useEffect(() => {
+    if (loading || showInstructions || submitting) return;
+    
+    const interval = setInterval(() => {
+      autoSave(answersRef.current);
+    }, 30000);
+    
+    return () => clearInterval(interval);
+  }, [loading, showInstructions, submitting, autoSave]);
 
   useEffect(() => {
     if (loading || timeLeft <= 0 || showInstructions) return;
@@ -1579,10 +1805,18 @@ const ExamSession: React.FC<{ exam: Exam, profile: UserProfile, onComplete: (s: 
     return () => clearInterval(timer);
   }, [loading, timeLeft, showInstructions]);
 
-  const handleAnswer = (optionIdx: number) => {
+  useEffect(() => {
+    if (timeLeft === 300) {
+      showToast('5 minutes remaining!', 'info');
+    } else if (timeLeft === 60) {
+      showToast('Final minute! Please submit your exam.', 'error');
+    }
+  }, [timeLeft]);
+
+  const handleAnswer = (answer: number | string) => {
     setAnswers(prev => {
       const newAnswers = [...prev];
-      newAnswers[currentIndex] = optionIdx;
+      newAnswers[currentIndex] = answer;
       return newAnswers;
     });
   };
@@ -1618,19 +1852,21 @@ const ExamSession: React.FC<{ exam: Exam, profile: UserProfile, onComplete: (s: 
       }
 
       // Answer Selection (A, B, C, D)
-      const key = e.key.toUpperCase();
-      if (['A', 'B', 'C', 'D'].includes(key)) {
-        const index = key.charCodeAt(0) - 65;
-        if (questions[currentIndex] && index < questions[currentIndex].options.length) {
-          handleAnswer(index);
+      if (questions[currentIndex]?.type !== 'short-answer') {
+        const key = e.key.toUpperCase();
+        if (['A', 'B', 'C', 'D'].includes(key)) {
+          const index = key.charCodeAt(0) - 65;
+          if (questions[currentIndex] && index < (questions[currentIndex].options?.length || 0)) {
+            handleAnswer(index);
+          }
         }
-      }
-      
-      // Answer Selection (1, 2, 3, 4)
-      if (['1', '2', '3', '4'].includes(e.key)) {
-        const index = parseInt(e.key) - 1;
-        if (questions[currentIndex] && index < questions[currentIndex].options.length) {
-          handleAnswer(index);
+        
+        // Answer Selection (1, 2, 3, 4)
+        if (['1', '2', '3', '4'].includes(e.key)) {
+          const index = parseInt(e.key) - 1;
+          if (questions[currentIndex] && index < (questions[currentIndex].options?.length || 0)) {
+            handleAnswer(index);
+          }
         }
       }
 
@@ -1656,8 +1892,18 @@ const ExamSession: React.FC<{ exam: Exam, profile: UserProfile, onComplete: (s: 
     let totalPoints = 0;
     questions.forEach((q, i) => {
       totalPoints += q.points;
-      if (answers[i] === q.correctAnswerIndex) {
-        score += q.points;
+      const studentAnswer = answers[i];
+      
+      if (q.type === 'short-answer') {
+        const correct = q.correctAnswer?.trim().toLowerCase();
+        const student = (studentAnswer as string)?.trim().toLowerCase();
+        if (correct && student === correct) {
+          score += q.points;
+        }
+      } else {
+        if (studentAnswer === q.correctAnswerIndex) {
+          score += q.points;
+        }
       }
     });
 
@@ -1672,9 +1918,15 @@ const ExamSession: React.FC<{ exam: Exam, profile: UserProfile, onComplete: (s: 
     };
 
     try {
-      const docRef = await addDoc(collection(db, 'submissions'), submission);
+      let finalSubmissionId = submissionId;
+      if (finalSubmissionId) {
+        await updateDoc(doc(db, 'submissions', finalSubmissionId), submission);
+      } else {
+        const docRef = await addDoc(collection(db, 'submissions'), submission);
+        finalSubmissionId = docRef.id;
+      }
       showToast('Exam submitted successfully!', 'success');
-      onComplete({ id: docRef.id, ...submission });
+      onComplete({ id: finalSubmissionId, ...submission });
     } catch (error) {
       showToast('Failed to submit exam. Please check your connection.', 'error');
       handleFirestoreError(error, OperationType.CREATE, 'submissions');
@@ -1725,7 +1977,11 @@ const ExamSession: React.FC<{ exam: Exam, profile: UserProfile, onComplete: (s: 
   }
 
   const currentQuestion = questions[currentIndex];
-  const answeredCount = answers.filter(a => a !== -1).length;
+  const answeredCount = answers.filter(a => {
+    if (typeof a === 'number') return a !== -1;
+    if (typeof a === 'string') return a.trim() !== '';
+    return false;
+  }).length;
   const remainingCount = questions.length - answeredCount;
   const progressPercentage = (answeredCount / questions.length) * 100;
 
@@ -1763,13 +2019,46 @@ const ExamSession: React.FC<{ exam: Exam, profile: UserProfile, onComplete: (s: 
           </div>
         </div>
         
-        <div className={`flex items-center gap-3 px-6 py-3 rounded-2xl border-2 font-mono text-xl font-bold w-full md:w-auto justify-center ${timeLeft < 60 ? 'bg-red-50 border-red-200 text-red-600 animate-pulse' : 'bg-white border-stone-200 text-stone-900'}`}>
-          <Clock className="w-6 h-6" />
-          {formatTime(timeLeft)}
+        <div className="flex flex-col items-center gap-1 w-full md:w-auto">
+          <div className={`flex items-center gap-3 px-6 py-3 rounded-2xl border-2 font-mono text-xl font-bold w-full md:w-auto justify-center transition-all duration-300 ${
+            timeLeft < 60 
+              ? 'bg-red-50 border-red-200 text-red-600 animate-pulse scale-105' 
+              : timeLeft < 300 
+                ? 'bg-amber-50 border-amber-200 text-amber-600' 
+                : 'bg-white border-stone-200 text-stone-900'
+          }`}>
+            <Clock className={`w-6 h-6 ${timeLeft < 60 ? 'animate-bounce' : ''}`} />
+            {formatTime(timeLeft)}
+          </div>
+          
+          <div className="flex items-center gap-2">
+            {isSaving ? (
+              <div className="flex items-center gap-1.5 text-[10px] font-bold text-stone-400 uppercase tracking-widest">
+                <div className="w-2 h-2 border border-stone-400 border-t-transparent rounded-full animate-spin" />
+                Saving...
+              </div>
+            ) : lastSaved ? (
+              <div className="text-[10px] font-bold text-stone-400 uppercase tracking-widest flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3 text-emerald-500" />
+                Saved {lastSaved.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </div>
+            ) : null}
+          </div>
+          {timeLeft < 300 && (
+            <motion.span 
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className={`text-[10px] font-bold uppercase tracking-widest ${timeLeft < 60 ? 'text-red-500' : 'text-amber-500'}`}
+            >
+              {timeLeft < 60 ? 'Final Minute!' : 'Time is running low'}
+            </motion.span>
+          )}
         </div>
       </div>
 
-      <div className="bg-white rounded-[2.5rem] shadow-2xl border border-stone-200 overflow-hidden">
+      <div className={`bg-white rounded-[2.5rem] shadow-2xl border-2 transition-all duration-500 overflow-hidden ${
+        timeLeft < 60 ? 'border-red-500 shadow-red-100' : 'border-stone-200'
+      }`}>
         <div className="h-3 bg-stone-100 relative">
           {/* Current Question Indicator */}
           <motion.div 
@@ -1788,24 +2077,48 @@ const ExamSession: React.FC<{ exam: Exam, profile: UserProfile, onComplete: (s: 
         </div>
         
         <div className="p-6 sm:p-10 md:p-16">
+          <div className="flex items-center gap-2 mb-4">
+            <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold uppercase tracking-wider ${
+              currentQuestion.type === 'multiple-choice' ? 'bg-blue-50 text-blue-600' :
+              currentQuestion.type === 'true-false' ? 'bg-purple-50 text-purple-600' :
+              'bg-amber-50 text-amber-600'
+            }`}>
+              {currentQuestion.type || 'multiple-choice'}
+            </span>
+            <span className="text-xs font-bold text-stone-400">{currentQuestion.points} {currentQuestion.points === 1 ? 'pt' : 'pts'}</span>
+          </div>
           <h3 className="text-xl sm:text-2xl md:text-3xl font-bold text-stone-900 mb-8 sm:mb-12 leading-tight">
             {currentQuestion.text}
           </h3>
           
-          <div className="grid grid-cols-1 gap-3 sm:gap-4">
-            {currentQuestion.options.map((opt, i) => (
-              <button
-                key={i}
-                onClick={() => handleAnswer(i)}
-                className={`flex items-center gap-4 sm:gap-6 p-4 sm:p-6 rounded-2xl sm:rounded-3xl border-2 text-left transition-all transform active:scale-[0.98] ${answers[currentIndex] === i ? 'bg-stone-900 border-stone-900 text-white shadow-xl' : 'bg-stone-50 border-stone-100 text-stone-600 hover:border-stone-300'}`}
-              >
-                <span className={`w-8 h-8 sm:w-10 h-10 rounded-lg sm:rounded-xl flex items-center justify-center font-bold text-base sm:text-lg flex-shrink-0 ${answers[currentIndex] === i ? 'bg-white/20' : 'bg-white border border-stone-200'}`}>
-                  {String.fromCharCode(65 + i)}
-                </span>
-                <span className="text-base sm:text-lg font-medium">{opt}</span>
-              </button>
-            ))}
-          </div>
+          {currentQuestion.type === 'short-answer' ? (
+            <div className="space-y-4">
+              <label className="block text-xs font-bold uppercase tracking-widest text-stone-400 mb-2">Your Answer</label>
+              <input 
+                type="text"
+                value={(answers[currentIndex] as string) === '-1' ? '' : (answers[currentIndex] as string) || ''}
+                onChange={e => handleAnswer(e.target.value)}
+                className="w-full px-8 py-6 bg-stone-50 border-2 border-stone-100 rounded-3xl focus:outline-none focus:ring-4 focus:ring-stone-900/5 focus:border-stone-900 transition-all text-xl font-medium"
+                placeholder="Type your answer here..."
+                autoFocus
+              />
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 sm:gap-4">
+              {currentQuestion.options?.map((opt, i) => (
+                <button
+                  key={i}
+                  onClick={() => handleAnswer(i)}
+                  className={`flex items-center gap-4 sm:gap-6 p-4 sm:p-6 rounded-2xl sm:rounded-3xl border-2 text-left transition-all transform active:scale-[0.98] ${answers[currentIndex] === i ? 'bg-stone-900 border-stone-900 text-white shadow-xl' : 'bg-stone-50 border-stone-100 text-stone-600 hover:border-stone-300'}`}
+                >
+                  <span className={`w-8 h-8 sm:w-10 h-10 rounded-lg sm:rounded-xl flex items-center justify-center font-bold text-base sm:text-lg flex-shrink-0 ${answers[currentIndex] === i ? 'bg-white/20' : 'bg-white border border-stone-200'}`}>
+                    {currentQuestion.type === 'true-false' ? (i === 0 ? 'T' : 'F') : String.fromCharCode(65 + i)}
+                  </span>
+                  <span className="text-base sm:text-lg font-medium">{opt}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="px-6 sm:px-10 md:px-16 pb-8 flex flex-wrap gap-4 text-[10px] font-bold uppercase tracking-widest text-stone-400">
@@ -2264,15 +2577,35 @@ const SubmissionDetailView: React.FC<{ submission: Submission, onClose: () => vo
 
       <div className="space-y-6">
         {questions.map((q, idx) => {
-          const studentAnswerIdx = submission.answers[idx];
-          const isCorrect = studentAnswerIdx === q.correctAnswerIndex;
+          const studentAnswer = submission.answers[idx];
+          let isCorrect = false;
+          
+          if (q.type === 'short-answer') {
+            const correct = q.correctAnswer?.trim().toLowerCase();
+            const student = (studentAnswer as string)?.trim().toLowerCase();
+            isCorrect = !!correct && student === correct;
+          } else {
+            isCorrect = studentAnswer === q.correctAnswerIndex;
+          }
           
           return (
             <div key={q.id} className={`bg-white p-8 rounded-[2rem] shadow-sm border-2 transition-all ${isCorrect ? 'border-emerald-100' : 'border-red-100'}`}>
               <div className="flex justify-between items-start mb-6">
                 <div className="flex items-center gap-4">
                   <span className="text-3xl font-serif italic text-stone-200 font-bold">{idx + 1}</span>
-                  <p className="text-xl font-bold text-stone-900 leading-tight">{q.text}</p>
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold uppercase tracking-wider ${
+                        q.type === 'multiple-choice' ? 'bg-blue-50 text-blue-600' :
+                        q.type === 'true-false' ? 'bg-purple-50 text-purple-600' :
+                        'bg-amber-50 text-amber-600'
+                      }`}>
+                        {q.type || 'multiple-choice'}
+                      </span>
+                      <span className="text-xs font-bold text-stone-400">{q.points} {q.points === 1 ? 'pt' : 'pts'}</span>
+                    </div>
+                    <p className="text-xl font-bold text-stone-900 leading-tight">{q.text}</p>
+                  </div>
                 </div>
                 <div className={`px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest flex items-center gap-2 ${isCorrect ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-600'}`}>
                   {isCorrect ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
@@ -2280,40 +2613,55 @@ const SubmissionDetailView: React.FC<{ submission: Submission, onClose: () => vo
                 </div>
               </div>
               
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {q.options.map((opt, i) => {
-                  const isStudentChoice = studentAnswerIdx === i;
-                  const isCorrectChoice = q.correctAnswerIndex === i;
-                  
-                  let bgClass = 'bg-stone-50 border-stone-100 text-stone-600';
-                  if (isCorrectChoice) bgClass = 'bg-emerald-50 border-emerald-200 text-emerald-700 ring-2 ring-emerald-500/20';
-                  if (isStudentChoice && !isCorrectChoice) bgClass = 'bg-red-50 border-red-200 text-red-700';
-
-                  return (
-                    <div key={i} className={`px-6 py-4 rounded-2xl border-2 text-sm font-bold flex items-center justify-between ${bgClass}`}>
-                      <div className="flex items-center gap-4">
-                        <span className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold border ${isCorrectChoice ? 'bg-white border-emerald-300' : isStudentChoice ? 'bg-white border-red-300' : 'bg-white border-stone-200'}`}>
-                          {String.fromCharCode(65 + i)}
-                        </span>
-                        {opt}
-                      </div>
-                      {isCorrectChoice && <CheckCircle2 className="w-5 h-5" />}
-                      {isStudentChoice && !isCorrectChoice && <AlertCircle className="w-5 h-5" />}
+              {q.type === 'short-answer' ? (
+                <div className="space-y-4">
+                  <div className={`p-6 rounded-2xl border-2 ${isCorrect ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-red-50 border-red-200 text-red-700'}`}>
+                    <span className="block text-[10px] uppercase tracking-widest font-bold mb-1 opacity-60">Your Answer</span>
+                    <span className="text-lg font-bold">{(studentAnswer as string) || '(No answer)'}</span>
+                  </div>
+                  {!isCorrect && (
+                    <div className="p-6 rounded-2xl border-2 bg-emerald-50 border-emerald-200 text-emerald-700">
+                      <span className="block text-[10px] uppercase tracking-widest font-bold mb-1 opacity-60">Correct Answer</span>
+                      <span className="text-lg font-bold">{q.correctAnswer}</span>
                     </div>
-                  );
-                })}
-              </div>
-              
-              {!isCorrect && studentAnswerIdx !== -1 && (
-                <div className="mt-6 p-4 bg-amber-50 rounded-2xl border border-amber-100 flex items-center gap-3 text-amber-700 text-sm font-medium">
-                  <AlertCircle className="w-5 h-5 flex-shrink-0" />
-                  <span>You selected <strong>{String.fromCharCode(65 + studentAnswerIdx)}</strong>. The correct answer is <strong>{String.fromCharCode(65 + q.correctAnswerIndex)}</strong>.</span>
+                  )}
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {q.options?.map((opt, i) => {
+                    const isStudentChoice = studentAnswer === i;
+                    const isCorrectChoice = q.correctAnswerIndex === i;
+                    
+                    let bgClass = 'bg-stone-50 border-stone-100 text-stone-600';
+                    if (isCorrectChoice) bgClass = 'bg-emerald-50 border-emerald-200 text-emerald-700 ring-2 ring-emerald-500/20';
+                    if (isStudentChoice && !isCorrectChoice) bgClass = 'bg-red-50 border-red-200 text-red-700';
+
+                    return (
+                      <div key={i} className={`px-6 py-4 rounded-2xl border-2 text-sm font-bold flex items-center justify-between ${bgClass}`}>
+                        <div className="flex items-center gap-4">
+                          <span className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold border ${isCorrectChoice ? 'bg-white border-emerald-300' : isStudentChoice ? 'bg-white border-red-300' : 'bg-white border-stone-200'}`}>
+                            {q.type === 'true-false' ? (i === 0 ? 'T' : 'F') : String.fromCharCode(65 + i)}
+                          </span>
+                          {opt}
+                        </div>
+                        {isCorrectChoice && <CheckCircle2 className="w-5 h-5" />}
+                        {isStudentChoice && !isCorrectChoice && <AlertCircle className="w-5 h-5" />}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
-              {studentAnswerIdx === -1 && (
+              
+              {!isCorrect && q.type !== 'short-answer' && studentAnswer !== -1 && (
+                <div className="mt-6 p-4 bg-amber-50 rounded-2xl border border-amber-100 flex items-center gap-3 text-amber-700 text-sm font-medium">
+                  <AlertCircle className="w-5 h-5 flex-shrink-0" />
+                  <span>You selected <strong>{q.type === 'true-false' ? (studentAnswer === 0 ? 'True' : 'False') : String.fromCharCode(65 + (studentAnswer as number))}</strong>. The correct answer is <strong>{q.type === 'true-false' ? (q.correctAnswerIndex === 0 ? 'True' : 'False') : String.fromCharCode(65 + q.correctAnswerIndex!)}</strong>.</span>
+                </div>
+              )}
+              {studentAnswer === -1 && q.type !== 'short-answer' && (
                 <div className="mt-6 p-4 bg-stone-50 rounded-2xl border border-stone-100 flex items-center gap-3 text-stone-500 text-sm font-medium">
                   <AlertCircle className="w-5 h-5 flex-shrink-0" />
-                  <span>You did not answer this question. The correct answer is <strong>{String.fromCharCode(65 + q.correctAnswerIndex)}</strong>.</span>
+                  <span>You did not answer this question. The correct answer is <strong>{q.type === 'true-false' ? (q.correctAnswerIndex === 0 ? 'True' : 'False') : String.fromCharCode(65 + q.correctAnswerIndex!)}</strong>.</span>
                 </div>
               )}
             </div>
